@@ -4,106 +4,113 @@ import threading
 import logging
 import time
 import os
+import mmap
 from configparser import ConfigParser, Error as ConfigError
 from typing import Optional, Tuple
 
-# Default config file path
 DEFAULT_CONFIG_FILE = "server/config.cfg"
 
-# Globals to be set after config load
-LINUX_PATH: str = ""
-REREAD_ON_QUERY: bool = True
+CONFIGURED_FILE_PATH: str = ""
+REREAD_CONFIG_ON_QUERY: bool = True
 SSL_ENABLED: bool = False
 SSL_CERTFILE: Optional[str] = None
 SSL_KEYFILE: Optional[str] = None
 
-# Load configuration function
+
 def load_config(config_file: str) -> ConfigParser:
     config = ConfigParser()
     try:
-        read_files = config.read(config_file)
-        if not read_files:
-            raise FileNotFoundError(f"Config file not found: {config_file}")
-
+        if not config.read(config_file):
+            raise FileNotFoundError(f"Configuration file not found: {config_file}")
         return config
     except ConfigError as ce:
-        logging.error(f"Config parsing error: {ce}")
+        logging.error(f"Configuration parsing error: {ce}")
         raise
     except Exception as e:
-        logging.error(f"Unexpected error loading config: {e}")
+        logging.error(f"Unexpected error while loading configuration: {e}")
         raise
 
-def init_globals_from_config(config: ConfigParser) -> None:
-    global LINUX_PATH, REREAD_ON_QUERY, SSL_ENABLED, SSL_CERTFILE, SSL_KEYFILE
 
-    LINUX_PATH = config.get("DEFAULT", "linuxpath", fallback="")
-    REREAD_ON_QUERY = config.getboolean("DEFAULT", "REREAD_ON_QUERY", fallback=True)
+def init_globals_from_config(config: ConfigParser) -> None:
+    global CONFIGURED_FILE_PATH, REREAD_CONFIG_ON_QUERY, SSL_ENABLED, SSL_CERTFILE, SSL_KEYFILE
+    CONFIGURED_FILE_PATH = config.get("DEFAULT", "linuxpath", fallback="")
+    REREAD_CONFIG_ON_QUERY = config.getboolean("DEFAULT", "REREAD_ON_QUERY", fallback=True)
     SSL_ENABLED = config.getboolean("DEFAULT", "SSL_ENABLED", fallback=False)
     SSL_CERTFILE = os.getenv("SSL_CERTFILE", config.get("DEFAULT", "SSL_CERTFILE", fallback="server/server-cert.pem"))
     SSL_KEYFILE = os.getenv("SSL_KEYFILE", config.get("DEFAULT", "SSL_KEYFILE", fallback="server/server-key.pem"))
+
 
 def setup_logging(level_str: str) -> None:
     level = getattr(logging, level_str.upper(), logging.INFO)
     logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def search_in_file(query: str) -> str:
+
+def search_in_file(query: str, reread: Optional[bool] = None) -> str:
     """
-    Search for an exact full-line match of `query` in the file specified by LINUX_PATH.
+    Search for exact query line in file.
+
+    Args:
+        query: The string to search.
+        reread: Override global reread config (optional).
 
     Returns:
-        - "STRING EXISTS" if found
-        - "STRING NOT FOUND" if not found
-        - "ERROR" if any error occurs
+        "STRING EXISTS", "STRING NOT FOUND", or "ERROR".
     """
-    global LINUX_PATH, REREAD_ON_QUERY
+    global CONFIGURED_FILE_PATH, REREAD_CONFIG_ON_QUERY
 
-    if REREAD_ON_QUERY:
-        # Reload config on each query to allow dynamic changes (optional)
+    reread_config = reread if reread is not None else REREAD_CONFIG_ON_QUERY
+    file_path = CONFIGURED_FILE_PATH
+
+    if reread_config:
         try:
             config = load_config(DEFAULT_CONFIG_FILE)
-            LINUX_PATH = config.get("DEFAULT", "linuxpath", fallback=LINUX_PATH)
+            file_path = config.get("DEFAULT", "linuxpath", fallback=file_path)
         except Exception:
-            logging.warning("Failed to reload config during search; using existing settings")
+            logging.warning("Failed to reload config during query. Continuing with current path.")
 
     try:
-        start_time = time.perf_counter()
-        with open(LINUX_PATH, 'r', encoding='utf-8') as file:
-            found = any(line.rstrip('\n') == query for line in file)
-        elapsed = time.perf_counter() - start_time
-        result = "STRING EXISTS" if found else "STRING NOT FOUND"
-        logging.debug(f"Search query: {query!r} Result: {result} Time: {elapsed:.4f}s")
-        return result
+        start = time.perf_counter()
+        encoded_query = (query + "\n").encode("utf-8")
+
+        with open(file_path, "rb") as f:
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                if encoded_query in mm:
+                    elapsed = time.perf_counter() - start
+                    logging.debug(f"Query '{query}' FOUND in {elapsed:.4f} seconds with reread={reread_config}")
+                    return "STRING EXISTS"
+
+        elapsed = time.perf_counter() - start
+        logging.debug(f"Query '{query}' NOT FOUND in {elapsed:.4f} seconds with reread={reread_config}")
+        return "STRING NOT FOUND"
 
     except FileNotFoundError:
-        logging.error(f"Search file not found: {LINUX_PATH}")
+        logging.error(f"Search file not found: {file_path}")
         return "ERROR"
     except PermissionError:
-        logging.error(f"Permission denied accessing file: {LINUX_PATH}")
+        logging.error(f"Permission denied: {file_path}")
         return "ERROR"
     except UnicodeDecodeError:
-        logging.error("File encoding error: cannot decode with UTF-8")
+        logging.error("Encoding error during search")
         return "ERROR"
     except Exception as e:
-        logging.exception(f"Unexpected error searching file: {e}")
+        logging.exception("Unexpected error during file search.")
         return "ERROR"
 
+
 def handle_client(client_socket: socket.socket, client_address: Tuple[str, int]) -> None:
-    """
-    Handle communication with a client: receive query, search file, send response.
-    """
     try:
         request = client_socket.recv(1024).decode('utf-8').strip()
         if not request:
-            logging.warning(f"Empty request received from {client_address}")
+            logging.warning(f"Empty request from {client_address}")
             client_socket.sendall(b"INVALID REQUEST\n")
             return
 
-        logging.debug(f"Request from {client_address}: {request}")
+        logging.debug(f"Received request from {client_address}: {request}")
         result = search_in_file(request)
         client_socket.sendall(f"{result}\n".encode('utf-8'))
 
     except UnicodeDecodeError:
-        logging.error(f"Unicode decode error from {client_address}")
+        logging.error(f"Failed to decode request from {client_address}")
         client_socket.sendall(b"DECODE ERROR\n")
     except socket.timeout:
         logging.warning(f"Timeout from {client_address}")
@@ -111,7 +118,7 @@ def handle_client(client_socket: socket.socket, client_address: Tuple[str, int])
     except ConnectionResetError:
         logging.warning(f"Connection reset by {client_address}")
     except Exception as e:
-        logging.exception(f"Unexpected error handling client {client_address}: {e}")
+        logging.exception(f"Unhandled error from {client_address}: {e}")
         try:
             client_socket.sendall(b"ERROR\n")
         except Exception:
@@ -119,20 +126,9 @@ def handle_client(client_socket: socket.socket, client_address: Tuple[str, int])
     finally:
         client_socket.close()
 
-def run_server(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    config_file: Optional[str] = None
-) -> None:
-    """
-    Start the TCP server with optional SSL.
 
-    Args:
-        host: Override host address to bind.
-        port: Override port number to bind.
-        config_file: Path to config file (defaults to DEFAULT_CONFIG_FILE).
-    """
-    global LINUX_PATH, REREAD_ON_QUERY, SSL_ENABLED, SSL_CERTFILE, SSL_KEYFILE
+def run_server(host: Optional[str] = None, port: Optional[int] = None, config_file: Optional[str] = None) -> None:
+    global SSL_ENABLED, SSL_CERTFILE, SSL_KEYFILE
 
     config_path = config_file or os.environ.get("SERVER_CONFIG_PATH") or DEFAULT_CONFIG_FILE
 
@@ -144,32 +140,46 @@ def run_server(
         server_host = host or config.get("DEFAULT", "HOST", fallback="0.0.0.0")
         server_port = port or config.getint("DEFAULT", "PORT", fallback=9999)
 
-        logging.info(f"Starting server on {server_host}:{server_port} SSL={'enabled' if SSL_ENABLED else 'disabled'}")
+        logging.info(f"Starting server on {server_host}:{server_port} | SSL: {'ENABLED' if SSL_ENABLED else 'DISABLED'}")
 
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        base_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        base_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         if SSL_ENABLED:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.load_cert_chain(certfile=SSL_CERTFILE, keyfile=SSL_KEYFILE)
-            server_socket = context.wrap_socket(server_socket, server_side=True)
+            try:
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                context.load_cert_chain(certfile=SSL_CERTFILE, keyfile=SSL_KEYFILE)
+                base_socket = context.wrap_socket(base_socket, server_side=True)
+                logging.info("SSL context initialized")
+            except ssl.SSLError as ssl_error:
+                logging.critical(f"SSL setup error: {ssl_error}")
+                return
+            except FileNotFoundError as fe:
+                logging.critical(f"SSL cert/key file not found: {fe}")
+                return
+            except Exception as e:
+                logging.critical(f"Unexpected SSL error: {e}")
+                return
 
-        server_socket.bind((server_host, server_port))
-        server_socket.listen(5)
+        base_socket.bind((server_host, server_port))
+        base_socket.listen(5)
+        logging.info("Server listening for connections...")
 
         while True:
-            client_sock, client_addr = server_socket.accept()
-            logging.info(f"Accepted connection from {client_addr}")
-            thread = threading.Thread(target=handle_client, args=(client_sock, client_addr), daemon=True)
-            thread.start()
+            try:
+                client_sock, client_addr = base_socket.accept()
+                logging.info(f"Connection from {client_addr}")
+                threading.Thread(target=handle_client, args=(client_sock, client_addr), daemon=True).start()
+            except Exception as e:
+                logging.error(f"Accept error: {e}")
 
     except KeyboardInterrupt:
-        logging.info("Server shutdown requested by user.")
+        logging.info("Server stopped by user")
     except Exception as e:
         logging.exception(f"Fatal server error: {e}")
     finally:
         try:
-            server_socket.close()
+            base_socket.close()
         except Exception:
             pass
         logging.info("Server socket closed.")
