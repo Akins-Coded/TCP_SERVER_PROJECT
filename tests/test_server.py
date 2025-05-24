@@ -7,7 +7,7 @@ import logging
 import pytest
 from unittest.mock import patch, mock_open
 
-from server import server  # assuming server.py is importable as server.server in your project
+from server import TCPServer
 
 HOST = "127.0.0.1"
 PORT = 44555
@@ -17,13 +17,7 @@ TEST_FILE_CONTENT = "present_line\nanother_line\nyet_another_line\n"
 
 @pytest.fixture(scope="module")
 def temp_file_with_lines():
-    lines = [
-        "apple",
-        "banana",
-        "cherry",
-        "date",
-        "elderberry"
-    ]
+    lines = ["apple", "banana", "cherry", "date", "elderberry"]
     with tempfile.NamedTemporaryFile("w+", delete=False) as f:
         f.write("\n".join(lines) + "\n")
         temp_path = f.name
@@ -50,75 +44,75 @@ LOG_LEVEL=DEBUG
 
 @pytest.fixture(scope="module")
 def run_server_thread(temp_config_file):
-    # Override config file path in the server module
-    server.DEFAULT_CONFIG_FILE = temp_config_file
-    # Start server thread
-    t = threading.Thread(target=server.run_server, daemon=True)
+    srv = TCPServer(config_file=temp_config_file)
+    t = threading.Thread(target=srv.run, daemon=True)
     t.start()
-    time.sleep(1)  # wait for server to be ready
+    time.sleep(1)  # Wait for server to be ready
     yield
-    # No explicit stop, daemon thread ends with tests
+    # No teardown needed as thread is daemon
 
 
 # --- Unit Tests for search_in_file --- #
 
-def test_search_found(temp_file_with_lines):
-    server.CONFIGURED_FILE_PATH = temp_file_with_lines
-    result = server.search_in_file("banana", reread=False)
+def test_search_found(temp_file_with_lines, temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = temp_file_with_lines
+    result = srv.search_in_file("banana", reread=False)
     assert result == "STRING EXISTS"
 
-def test_search_not_found(temp_file_with_lines):
-    server.CONFIGURED_FILE_PATH = temp_file_with_lines
-    result = server.search_in_file("fig", reread=False)
+def test_search_not_found(temp_file_with_lines, temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = temp_file_with_lines
+    result = srv.search_in_file("fig", reread=False)
     assert result == "STRING NOT FOUND"
 
-def test_search_reread_flag(temp_file_with_lines, temp_config_file):
-    server.DEFAULT_CONFIG_FILE = temp_config_file
-
-    # With reread True
-    result = server.search_in_file("cherry", reread=True)
+def test_search_reread_flag(temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    result = srv.search_in_file("cherry", reread=True)
     assert result == "STRING EXISTS"
 
-    # With reread False override
-    result = server.search_in_file("date", reread=False)
+    result = srv.search_in_file("date", reread=False)
     assert result == "STRING EXISTS"
 
-def test_search_file_not_found():
-    server.CONFIGURED_FILE_PATH = "/non/existent/file.txt"
-    result = server.search_in_file("anything", reread=False)
+def test_search_file_not_found(temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = "/non/existent/file.txt"
+    result = srv.search_in_file("anything", reread=False)
     assert result == "ERROR"
 
-def test_search_benchmark_log(caplog, temp_file_with_lines):
-    server.CONFIGURED_FILE_PATH = temp_file_with_lines
+def test_search_benchmark_log(caplog, temp_file_with_lines, temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = temp_file_with_lines
     with caplog.at_level(logging.DEBUG):
-        server.search_in_file("banana", reread=False)
-        found_log = any("FOUND" in rec.message for rec in caplog.records)
-        assert found_log
+        srv.search_in_file("banana", reread=False)
+        assert any("FOUND" in rec.message for rec in caplog.records)
 
         caplog.clear()
-        server.search_in_file("notthere", reread=False)
-        not_found_log = any("NOT FOUND" in rec.message for rec in caplog.records)
-        assert not_found_log
+        srv.search_in_file("notthere", reread=False)
+        assert any("NOT FOUND" in rec.message for rec in caplog.records)
 
 
 # --- Unit Tests with mocks for search_in_file --- #
 
 @patch("builtins.open", new_callable=mock_open, read_data=TEST_FILE_CONTENT)
-@patch("server.CONFIGURED_FILE_PATH", "/fake/path/to/file.txt")
-def test_search_in_file_found_mock(mock_file):
-    result = server.search_in_file(TEST_QUERY_EXISTS)
+def test_search_in_file_found_mock(mock_file, temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = "/fake/path/to/file.txt"
+    result = srv.search_in_file(TEST_QUERY_EXISTS)
     assert result == "STRING EXISTS"
 
 @patch("builtins.open", new_callable=mock_open, read_data=TEST_FILE_CONTENT)
-@patch("server.CONFIGURED_FILE_PATH", "/fake/path/to/file.txt")
-def test_search_in_file_not_found_mock(mock_file):
-    result = server.search_in_file(TEST_QUERY_NOT_FOUND)
+def test_search_in_file_not_found_mock(mock_file, temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = "/fake/path/to/file.txt"
+    result = srv.search_in_file(TEST_QUERY_NOT_FOUND)
     assert result == "STRING NOT FOUND"
 
 @patch("builtins.open", side_effect=FileNotFoundError)
-@patch("server.CONFIGURED_FILE_PATH", "/invalid/path.txt")
-def test_search_file_not_found_mock(mock_open_file):
-    result = server.search_in_file("any_line")
+def test_search_file_not_found_mock(mock_open_file, temp_config_file):
+    srv = TCPServer(config_file=temp_config_file)
+    srv.CONFIGURED_FILE_PATH = "/invalid/path.txt"
+    result = srv.search_in_file("any_line")
     assert result == "ERROR"
 
 
@@ -127,8 +121,7 @@ def test_search_file_not_found_mock(mock_open_file):
 def send_request(message: str) -> str:
     with socket.create_connection((HOST, PORT), timeout=5) as sock:
         sock.sendall((message + "\n").encode("utf-8"))
-        response = sock.recv(1024).decode("utf-8").strip()
-        return response
+        return sock.recv(1024).decode("utf-8").strip()
 
 
 @pytest.mark.usefixtures("run_server_thread")

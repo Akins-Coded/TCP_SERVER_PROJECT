@@ -2,10 +2,14 @@ import socket
 import time
 import matplotlib.pyplot as plt
 import os  # Added import for directory creation
+from configparser import ConfigParser  # Added for config parsing
 
-# Server configuration
-SERVER_HOST = "135.181.96.160"
-SERVER_PORT = 44445
+# Load server configuration from config.cfg
+config = ConfigParser()
+config.read('server/config.cfg')
+
+SERVER_HOST = config.get('DEFAULT', 'HOST', fallback='127.0.0.1')
+SERVER_PORT = config.getint('DEFAULT', 'PORT', fallback=44445)
 
 # Benchmark queries
 TEST_QUERIES = ["test_line_1", "test_line_2", "test_line_3", "not_existing_line"] * 5

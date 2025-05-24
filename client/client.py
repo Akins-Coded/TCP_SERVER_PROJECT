@@ -4,6 +4,7 @@ import logging
 import argparse
 from typing import Optional
 from configparser import ConfigParser
+import os
 
 # Load configuration
 config = ConfigParser()
@@ -12,8 +13,9 @@ config.read('server/config.cfg')
 HOST: str = config.get('DEFAULT', 'HOST', fallback='127.0.0.1')
 PORT: int = config.getint('DEFAULT', 'PORT', fallback=44445)
 SSL_ENABLED: bool = config.getboolean('DEFAULT', 'SSL_ENABLED', fallback=False)
+CA_CERT_PATH: str = config.get('DEFAULT', 'CA_CERT_PATH', fallback='server/ca-cert.pem')
 
-# Configure logging
+# Configure default logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def send_query(query: str, host: str = HOST, port: int = PORT, ssl_enabled: bool = SSL_ENABLED) -> str:
@@ -29,57 +31,59 @@ def send_query(query: str, host: str = HOST, port: int = PORT, ssl_enabled: bool
     Returns:
         str: The server's response, or "ERROR" if an error occurs.
     """
-    client_socket: Optional[socket.socket] = None
     try:
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if ssl_enabled:
-            context = ssl.create_default_context()
-            client_socket = context.wrap_socket(client_socket, server_hostname=host)
-        client_socket.connect((host, port))
-        client_socket.send(query.encode())
-        response: str = client_socket.recv(1024).decode().strip()
-        logging.debug(f"Received response: {response}")
-        return response
-    except Exception as e:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+            if ssl_enabled:
+                context = ssl.create_default_context()
+                if os.path.exists(CA_CERT_PATH):
+                    context.load_verify_locations(cafile=CA_CERT_PATH)
+                else:
+                    logging.warning(f"CA certificate not found at {CA_CERT_PATH}")
+                client_socket = context.wrap_socket(client_socket, server_hostname=host)
+            client_socket.connect((host, port))
+            client_socket.sendall(query.encode())
+            response: str = client_socket.recv(1024).decode().strip()
+            logging.debug(f"Received response: {response}")
+            return response
+    except (socket.error, ssl.SSLError) as e:
         logging.error(f"Error sending query: {e}")
         return "ERROR"
-    finally:
-        if client_socket:
-            client_socket.close()
 
 def setup_logging(level_str: str) -> None:
     """
     Configures the logging level and format.
 
     Args:
-        level_str (str): Logging level as a string (e.g., INFO, DEBUG).
+        level_str (str): Logging level as a string (e.g., 'INFO', 'DEBUG').
     """
     level = getattr(logging, level_str.upper(), logging.INFO)
-    logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.getLogger().setLevel(level)
 
 def create_ssl_context(certfile: str, keyfile: str) -> ssl.SSLContext:
     """
-    Creates and returns an SSL context using the given certificate and key files.
+    Creates and returns an SSL context for secure communication.
 
     Args:
-        certfile (str): Path to the certificate file.
-        keyfile (str): Path to the key file.
+        certfile (str): Path to the SSL certificate file.
+        keyfile (str): Path to the SSL private key file.
 
     Returns:
         ssl.SSLContext: Configured SSL context.
     """
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    context.verify_mode = ssl.CERT_REQUIRED
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    context.load_verify_locations(cafile=CA_CERT_PATH)
     return context
 
 def main():
     parser = argparse.ArgumentParser(description="Secure TCP Client")
-    parser.add_argument('--host', default='127.0.0.1', help='Server hostname or IP address')
+    parser.add_argument('--host', default=HOST, help='Server hostname or IP address')
     parser.add_argument('--port', type=int, default=PORT, help='Server port')
     parser.add_argument('--ssl', action='store_true', help='Enable SSL')
     parser.add_argument('--certfile', default='client-cert.pem', help='Path to SSL certificate')
     parser.add_argument('--keyfile', default='client-key.pem', help='Path to SSL key')
-    parser.add_argument('--log-level', default='INFO', help='Logging level')
+    parser.add_argument('--log-level', default='INFO', help='Logging level (DEBUG, INFO, WARNING, ERROR)')
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -90,6 +94,7 @@ def main():
             context = create_ssl_context(args.certfile, args.keyfile)
             sock = context.wrap_socket(sock, server_hostname=args.host)
         logging.info(f"Connected to {args.host}:{args.port}")
+
         while True:
             query = input("Enter query (or 'exit' to quit): ").strip()
             if query.lower() == 'exit':
@@ -97,7 +102,7 @@ def main():
             sock.sendall(query.encode('utf-8'))
             response = sock.recv(1024).decode('utf-8')
             print(f"Response: {response}")
-    except Exception as e:
+    except (socket.error, ssl.SSLError, Exception) as e:
         logging.error(f"An error occurred: {e}")
     finally:
         sock.close()
