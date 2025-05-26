@@ -1,6 +1,7 @@
-### 🔐 Secure TCP String Search Server
+## 🔐 Secure TCP String Search Server
 
-This project implements a secure, multithreaded TCP server in Python for performing exact string match lookups within a large text file. It supports SSL/TLS encryption, dynamic configuration, multithreaded client handling, unit testing, detailed logging, and Linux daemonization for production deployments.
+This project implements a secure, multithreaded TCP server in Python that performs exact string match lookups in a large text file. It supports SSL/TLS encryption, dynamic configuration, unit testing, detailed logging, and Linux daemonization for production deployments.
+
 🚀 Features
 
     ✅ SSL/TLS encryption with configurable certificates
@@ -42,11 +43,12 @@ WantedBy=multi-user.target
 
   🔔 Note: Replace /tcp_server_project/ with the absolute path to your project directory.
 
+
 ⚙️ Configuration
 
 All configuration options are defined in server/config.cfg.
 
-To set the file search path manually via environment variable:
+To override the search file path via an environment variable:
 
 # bash
 export SEARCH_FILE_PATH=/root/200k.txt
@@ -54,7 +56,7 @@ export SEARCH_FILE_PATH=/root/200k.txt
 🔐 Generating SSL Certificate and Key
 
 To enable SSL/TLS, generate a self-signed certificate and private key using OpenSSL.
-Step 1: Ensure OpenSSL is Installed
+Step 1: Install OpenSSL
 
 # bash
 sudo apt install openssl
@@ -120,7 +122,7 @@ Check the server status:
 # bash
 sudo systemctl status tcp-server
 
-🧪 Testing
+🧪 Running Tests
 
 To run unit tests:
 # bash
@@ -132,9 +134,9 @@ To connect a client to the server:
 # bash
 python3 client/client.py --host 135.181.96.160 --port 44445
 
-📊 Run Performance Benchmark
+📊 Running The Performance Benchmark
 
-To execute the performance benchmarking script:
+To execute the benchmark script:
 # bash
 
 python3 report/benchmark.py
